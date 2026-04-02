@@ -158,7 +158,7 @@ async function fetchGridWindData(
   return results;
 }
 
-// 计算全省总功率（按装机容量加权）
+// 计算全省总功率（按装机容量加权）- 简化版，只使用市中心数据
 async function calculateProvinceTotalPower(
   startDate: Date,
   endDate: Date
@@ -166,64 +166,25 @@ async function calculateProvinceTotalPower(
   // 计算总装机容量
   const totalCapacity = cities.reduce((sum, city) => sum + (city.capacity || 0), 0);
 
-  // 为每个市州生成 100 个网格点
-  const generateGridPoints = (city: any) => {
-    const points = [];
-    const range = 0.5;
-    const step = range / 10;
-    for (let i = 0; i < 10; i++) {
-      for (let j = 0; j < 10; j++) {
-        points.push({
-          id: i * 10 + j,
-          lat: city.lat - range / 2 + i * step,
-          lng: city.lng - range / 2 + j * step,
-        });
-      }
-    }
-    return points;
-  };
-
-  // 获取所有市州的网格点功率数据
-  const cityResults = await Promise.allSettled(
+  // 获取所有市州的功率数据（使用市中心数据）
+  const results = await Promise.allSettled(
     cities.map(async (city) => {
-      const gridPoints = generateGridPoints(city);
-
-      // 获取该市州所有网格点的真实数据
-      const gridResults = await fetchGridWindData(gridPoints, startDate, endDate);
-
-      // 计算该时刻每个网格点的功率，然后求平均
-      const timePowerMap = new Map<string, number[]>();
-
-      gridResults.forEach((gridResult: any) => {
-        gridResult.hourly_data.forEach((h: any) => {
-          if (!timePowerMap.has(h.time)) {
-            timePowerMap.set(h.time, []);
-          }
-          timePowerMap.get(h.time)!.push(h.power_kw);
-        });
-      });
-
-      // 每个时刻：平均功率 × 装机容量
-      const data = Array.from(timePowerMap.entries()).map(([time, powers]) => {
-        const avgPower = powers.reduce((sum, p) => sum + p, 0) / powers.length;
-        return {
-          time: time,
-          value: avgPower * (city.capacity || 1), // 乘以装机容量加权
-        };
-      });
-
+      const windData = await fetchHistoricalWindData(city.lat, city.lng, startDate, endDate);
       return {
         city: city.name,
         capacity: city.capacity || 0,
-        gridPointCount: gridResults.length,
-        data,
+        data: windData.hourly_data.map((d: any) => ({
+          time: d.time,
+          // 根据装机容量加权
+          value: d.power_kw * (city.capacity || 1),
+        })),
       };
     })
   );
 
   // 收集成功的数据
-  const allCityData = cityResults
-    .filter((r): r is PromiseFulfilledResult<any> => r.status === 'fulfilled')
+  const allCityData = results
+    .filter((r): r is PromiseFulfilledResult<{ city: string; capacity: number; data: any[] }> => r.status === 'fulfilled')
     .map(r => r.value);
 
   if (allCityData.length === 0) {
